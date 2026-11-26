@@ -15,6 +15,7 @@ const ownerShareFields = 'share_token, share_expires_at, (share_password_hash IS
 const shareGrantCookie = '__Secure-folio_share';
 const shareGrantLifetime = 12 * 60 * 60;
 const shareExpiryFilter = '(share_expires_at IS NULL OR share_expires_at > unixepoch())';
+const activeDocumentOwner = "EXISTS (SELECT 1 FROM users WHERE users.id = documents.owner_id AND users.status = 'active')";
 const incomplete = "(state = 'deleting' OR (state = 'pending' AND created_at < ?))";
 const security = {
   'X-Content-Type-Options': 'nosniff',
@@ -142,24 +143,32 @@ async function getUser(request, env) {
   const token = sessionToken(request);
   if (!token) return null;
   return env.DB.prepare(
-    'SELECT users.id, users.username, users.is_admin FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ?',
+    "SELECT users.id, users.username, users.is_admin FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ? AND users.status = 'active'",
   ).bind(hex(await digest(token)), now()).first();
 }
 
 function readCredentials(input) {
   const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
-  const password = typeof input.password === 'string' ? input.password : '';
-  if (!/^[a-z0-9_][a-z0-9_.-]{2,31}$/.test(username) || password.length < 12 || password.length > 128) {
+  const { password } = input;
+  if (!/^[a-z0-9_][a-z0-9_.-]{2,31}$/.test(username) || !validPassword(password)) {
     throw new HttpError(400, '用户名须为 3–32 位英文、数字或 ._-，密码须为 12–128 位。');
   }
   return { username, password };
 }
 
-async function createUser(env, username, password) {
-  if (!env.PASSWORD_PEPPER) throw new HttpError(503, '创建用户暂不可用。');
-  const user = { id: randomHex(16), username };
+function validPassword(password) {
+  return typeof password === 'string' && password.length >= 12 && password.length <= 128;
+}
+
+async function makePassword(password, env) {
+  if (!env.PASSWORD_PEPPER) throw new HttpError(503, '暂时无法设置密码。');
   const salt = randomHex(16);
-  const verifier = hex(await passwordVerifier(password, salt, env.PASSWORD_PEPPER));
+  return { salt, verifier: hex(await passwordVerifier(password, salt, env.PASSWORD_PEPPER)) };
+}
+
+async function createUser(env, username, password) {
+  const { salt, verifier } = await makePassword(password, env);
+  const user = { id: randomHex(16), username, verifier };
   const result = await env.DB.prepare(
     'INSERT INTO users (id, username, salt, verifier) VALUES (?, ?, ?, ?) ON CONFLICT(username) DO NOTHING',
   ).bind(user.id, username, salt, verifier).run();
@@ -190,17 +199,20 @@ async function auth(request, env, registration) {
     if (!user || !crypto.subtle.timingSafeEqual(verifier, fromHex(user.verifier))) {
       throw new HttpError(401, '用户名或密码错误。');
     }
+    if (user.status !== 'active') throw new HttpError(403, '此账号已暂停使用。');
   }
 
   const token = randomHex(32);
   const time = now();
   const existing = sessionToken(request);
   const existingHash = existing ? hex(await digest(existing)) : '';
-  await env.DB.batch([
+  const [, created] = await env.DB.batch([
     env.DB.prepare('DELETE FROM sessions WHERE expires_at <= ? OR token_hash = ?').bind(time, existingHash),
-    env.DB.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-      .bind(hex(await digest(token)), user.id, time + sessionSeconds),
+    env.DB.prepare(
+      "INSERT INTO sessions (token_hash, user_id, expires_at) SELECT ?, id, ? FROM users WHERE id = ? AND verifier = ? AND status = 'active'",
+    ).bind(hex(await digest(token)), time + sessionSeconds, user.id, user.verifier),
   ]);
+  if (!created.meta.changes) throw new HttpError(401, '账号状态或密码已变化，请重新登录。');
   return json({ username, is_admin: Boolean(user.is_admin) }, registration ? 201 : 200, {
     'Set-Cookie': sessionCookie(token, sessionSeconds),
   });
@@ -270,23 +282,35 @@ async function storeDocument(env, owner, name, format, bytes, shared, settings =
     "INSERT INTO documents (id, owner_id, name, format, size, created_at, state) " +
     "SELECT ?, ?, ?, ?, ?, ?, 'pending' FROM (" +
     'SELECT COUNT(*) AS document_count, COALESCE(SUM(size), 0) AS total_size FROM documents WHERE owner_id = ?' +
-    ') WHERE document_count < ? AND total_size + ? <= ?',
-  ).bind(id, owner, name, format, bytes.length, time, owner, maxDocuments, bytes.length, maxStorage).run();
-  if (!reservation.meta.changes) throw new HttpError(409, '已达到 100 份文档或 150 MB 的空间上限。');
+    ") WHERE document_count < ? AND total_size + ? <= ? AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active')",
+  ).bind(id, owner, name, format, bytes.length, time, owner, maxDocuments, bytes.length, maxStorage, owner).run();
+  if (!reservation.meta.changes) {
+    const active = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND status = 'active'").bind(owner).first();
+    if (!active) throw new HttpError(403, '此账号已暂停使用。');
+    throw new HttpError(409, '已达到 100 份文档或 150 MB 的空间上限。');
+  }
+
+  const discardUpload = async () => {
+    const result = await env.DB.prepare("UPDATE documents SET state = 'deleting' WHERE id = ? AND state = 'pending'")
+      .bind(id).run();
+    if (result.meta.changes) await purgeDocuments(env, [id]);
+  };
 
   try {
     await env.FILES.put(id, bytes);
   } catch (error) {
-    await env.DB.prepare("UPDATE documents SET state = 'deleting' WHERE id = ? AND state = 'pending'")
-      .bind(id).run().then(() => purgeDocuments(env, [id])).catch(() => {});
+    await discardUpload().catch(() => {});
     throw error;
   }
   const document = await env.DB.prepare(
     "UPDATE documents SET state = 'ready', share_token = ?, share_expires_at = ?, share_password_salt = ?, " +
-    "share_password_hash = ? WHERE id = ? AND owner_id = ? AND state = 'pending' RETURNING " +
+    "share_password_hash = ? WHERE id = ? AND owner_id = ? AND state = 'pending' AND " + activeDocumentOwner + " RETURNING " +
     documentFields + ', ' + ownerShareFields,
   ).bind(shared ? randomHex(24) : null, policy.expiresAt ?? null, policy.salt ?? null, policy.verifier ?? null, id, owner).first();
-  if (!document) throw new HttpError(503, '上传尚未完成，请稍后重试。');
+  if (!document) {
+    await discardUpload();
+    throw new HttpError(403, '此账号已暂停使用，上传已取消。');
+  }
   return document;
 }
 
@@ -370,10 +394,12 @@ async function mcpToken(request, env, owner) {
   if (request.method === 'POST') {
     const token = 'fd_' + randomHex(32);
     const time = now();
-    await env.DB.prepare(
-      'INSERT INTO mcp_tokens (user_id, token_hash, created_at) VALUES (?, ?, ?) ' +
+    const result = await env.DB.prepare(
+      'INSERT INTO mcp_tokens (user_id, token_hash, created_at) ' +
+      "SELECT users.id, ?, ? FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.id = ? AND users.status = 'active' " +
       'ON CONFLICT(user_id) DO UPDATE SET token_hash = excluded.token_hash, created_at = excluded.created_at',
-    ).bind(owner, hex(await digest(token)), time).run();
+    ).bind(hex(await digest(token)), time, hex(await digest(sessionToken(request))), time, owner).run();
+    if (!result.meta.changes) throw new HttpError(401, '登录已失效，请重新登录。');
     return json({ token, created_at: time }, 201);
   }
   if (request.method === 'DELETE') {
@@ -403,7 +429,7 @@ async function resolveShareCode(request, env) {
   if (!code) throw new HttpError(400, '请输入 16 位分享码。');
   const { results } = await env.DB.prepare(
     "SELECT share_token FROM documents WHERE share_token IS NOT NULL AND state = 'ready' AND " +
-    shareExpiryFilter + ' AND substr(share_token, 1, 16) = ? LIMIT 2',
+    shareExpiryFilter + ' AND ' + activeDocumentOwner + ' AND substr(share_token, 1, 16) = ? LIMIT 2',
   ).bind(code).all();
   if (results.length !== 1) throw new HttpError(404, '分享码无效或分享已关闭。');
   return json({ path: '/share/' + results[0].share_token });
@@ -449,7 +475,9 @@ async function mcp(request, env, url) {
   const origin = request.headers.get('Origin');
   if (origin !== null && origin !== url.origin) throw new HttpError(403, '此请求不受信任。');
   const token = request.headers.get('Authorization')?.match(/^Bearer (fd_[a-f0-9]{64})$/i)?.[1];
-  const user = token ? await env.DB.prepare('SELECT user_id FROM mcp_tokens WHERE token_hash = ?')
+  const user = token ? await env.DB.prepare(
+    "SELECT user_id FROM mcp_tokens JOIN users ON users.id = mcp_tokens.user_id WHERE token_hash = ? AND users.status = 'active'",
+  )
     .bind(hex(await digest(token))).first() : null;
   if (!user) return json({ error: '需要有效的 MCP 令牌。' }, 401, {
     'WWW-Authenticate': 'Bearer realm="Folio Dock"',
@@ -510,7 +538,7 @@ async function activateAdmin(request, env, user) {
   const [provided, expected] = await Promise.all([digest(code.trim()), digest(env.ADMIN_SETUP_CODE)]);
   if (!crypto.subtle.timingSafeEqual(provided, expected)) throw new HttpError(403, '管理员激活码无效。');
   const result = await env.DB.prepare(
-    'UPDATE users SET is_admin = 1 WHERE id = ? AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)',
+    "UPDATE users SET is_admin = 1 WHERE id = ? AND status = 'active' AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)",
   ).bind(user.id).run();
   if (!result.meta.changes) throw new HttpError(409, '管理员已完成设置。');
   return json({ is_admin: true });
@@ -524,8 +552,8 @@ async function adminDocuments(env, url) {
   if (!Number.isSafeInteger(page) || page < 1 || page > 100_000) throw new HttpError(400, '页码无效。');
   const filters = {
     all: '1 = 1',
-    shared: "documents.state = 'ready' AND documents.share_token IS NOT NULL AND " + shareExpiryFilter,
-    private: "documents.state = 'ready' AND (documents.share_token IS NULL OR NOT " + shareExpiryFilter + ')',
+    shared: "documents.state = 'ready' AND documents.share_token IS NOT NULL AND users.status = 'active' AND " + shareExpiryFilter,
+    private: "documents.state = 'ready' AND (documents.share_token IS NULL OR users.status != 'active' OR NOT " + shareExpiryFilter + ')',
     incomplete: "documents.state != 'ready'",
   };
   if (!Object.hasOwn(filters, filter)) throw new HttpError(400, '筛选条件无效。');
@@ -534,7 +562,7 @@ async function adminDocuments(env, url) {
   const [items, count, stats] = await env.DB.batch([
     env.DB.prepare(
       'SELECT documents.id, documents.name, documents.format, documents.size, documents.created_at, documents.state, ' +
-      '(documents.share_token IS NOT NULL AND ' + shareExpiryFilter + ') AS shared, users.username AS owner' + from +
+      "(documents.share_token IS NOT NULL AND users.status = 'active' AND " + shareExpiryFilter + ') AS shared, users.username AS owner' + from +
       ' ORDER BY documents.created_at DESC, documents.id DESC LIMIT ? OFFSET ?',
     ).bind(query, query, pageSize, (page - 1) * pageSize),
     env.DB.prepare('SELECT COUNT(*) AS total' + from).bind(query, query),
@@ -546,15 +574,96 @@ async function adminDocuments(env, url) {
   return json({ documents: items.results, total: count.results[0].total, page_size: pageSize, stats: stats.results[0] });
 }
 
+async function listUsers(env, url) {
+  const query = (url.searchParams.get('q') ?? '').trim().toLowerCase().slice(0, 32);
+  const page = Number(url.searchParams.get('page') ?? 1);
+  const pageSize = 25;
+  if (!Number.isSafeInteger(page) || page < 1 || page > 100_000) throw new HttpError(400, '页码无效。');
+  const filter = ' FROM users WHERE instr(username, ?) > 0';
+  const [items, count] = await env.DB.batch([
+    env.DB.prepare(
+      'SELECT id, username, is_admin, status, ' +
+      '(SELECT COUNT(*) FROM documents WHERE owner_id = users.id) AS document_count' +
+      filter + ' ORDER BY is_admin DESC, username ASC LIMIT ? OFFSET ?',
+    ).bind(query, pageSize, (page - 1) * pageSize),
+    env.DB.prepare('SELECT COUNT(*) AS total' + filter).bind(query),
+  ]);
+  return json({ users: items.results, total: count.results[0].total, page_size: pageSize });
+}
+
+async function updateMember(env, id, assignments, values, { revoke, allowDeleting = false }) {
+  const predicate = "id = ? AND is_admin = 0" + (allowDeleting ? '' : " AND status != 'deleting'");
+  const statements = [env.DB.prepare('UPDATE users SET ' + assignments + ' WHERE ' + predicate).bind(...values, id)];
+  if (revoke) {
+    statements.push(
+      env.DB.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE id = ? AND is_admin = 0)').bind(id),
+      env.DB.prepare('DELETE FROM mcp_tokens WHERE user_id IN (SELECT id FROM users WHERE id = ? AND is_admin = 0)').bind(id),
+    );
+  }
+  const [result] = await env.DB.batch(statements);
+  if (!result.meta.changes) throw new HttpError(409, '用户状态已变化，请刷新后重试。');
+}
+
+async function deleteMember(id, env) {
+  await updateMember(env, id, 'status = ?', ['deleting'], { revoke: true, allowDeleting: true });
+  const { results } = await env.DB.prepare(
+    "UPDATE documents SET state = 'deleting', share_token = NULL WHERE owner_id = ? AND (state != 'pending' OR created_at < ?) RETURNING id",
+  ).bind(id, now() - 3600).all();
+  for (let offset = 0; offset < results.length; offset += 50) {
+    await purgeDocuments(env, results.slice(offset, offset + 50).map(document => document.id));
+  }
+
+  const deleted = await env.DB.prepare(
+    "DELETE FROM users WHERE id = ? AND status = 'deleting' AND NOT EXISTS (SELECT 1 FROM documents WHERE owner_id = users.id)",
+  ).bind(id).run();
+  if (!deleted.meta.changes) {
+    const pending = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(id).first();
+    if (pending) return json({ status: 'deleting' }, 202);
+  }
+  return json({ status: 'deleted' });
+}
+
+async function manageMember(request, env, id, action) {
+  const member = await env.DB.prepare('SELECT is_admin, status FROM users WHERE id = ?').bind(id).first();
+  if (!member) throw new HttpError(404, '找不到此用户。');
+  if (member.is_admin) throw new HttpError(403, '此操作仅支持普通用户。');
+  if (request.method === 'DELETE' && !action) return deleteMember(id, env);
+  if (member.status === 'deleting') throw new HttpError(409, '此账号正在删除。');
+
+  if (request.method === 'PATCH' && action === 'password') {
+    const { password } = await readJson(request);
+    if (!validPassword(password)) throw new HttpError(400, '密码须为 12–128 位。');
+    const { salt, verifier } = await makePassword(password, env);
+    await updateMember(env, id, 'salt = ?, verifier = ?', [salt, verifier], { revoke: true });
+    return json({ ok: true });
+  }
+  if (request.method === 'PATCH' && action === 'status') {
+    const { status } = await readJson(request);
+    if (status !== 'active' && status !== 'disabled') throw new HttpError(400, '用户状态无效。');
+    await updateMember(env, id, 'status = ?', [status], { revoke: status === 'disabled' });
+    return json({ status });
+  }
+  throw new HttpError(405, '此请求方式不可用。');
+}
+
 async function admin(request, env, url, user) {
   const { pathname } = url;
-  if (pathname === '/api/admin/activate' && request.method === 'POST') return activateAdmin(request, env, user);
+  if (pathname === '/api/admin/activate') {
+    if (request.method === 'POST') return activateAdmin(request, env, user);
+    if (request.method === 'GET') {
+      const administrator = await env.DB.prepare('SELECT id FROM users WHERE is_admin = 1 LIMIT 1').first();
+      return json({ available: !administrator && Boolean(env.ADMIN_SETUP_CODE) });
+    }
+  }
   if (!user.is_admin) throw new HttpError(403, '需要管理员权限。');
+  if (pathname === '/api/admin/users' && request.method === 'GET') return listUsers(env, url);
   if (pathname === '/api/admin/users' && request.method === 'POST') {
     const { username, password } = readCredentials(await readJson(request));
     await createUser(env, username, password);
     return json({ username }, 201);
   }
+  const member = pathname.match(/^\/api\/admin\/users\/([a-f0-9]{32})(?:\/(password|status))?$/);
+  if (member) return manageMember(request, env, member[1], member[2]);
   if (pathname === '/api/admin/documents' && request.method === 'GET') return adminDocuments(env, url);
   if (pathname === '/api/admin/cleanup' && request.method === 'POST') {
     return json({ deleted: await cleanupIncomplete(env) });
@@ -656,7 +765,7 @@ async function api(request, env, url) {
     if (action === 'verify' ? method !== 'POST' : method !== 'GET') throw new HttpError(405, '此请求方式不可用。');
     const record = await env.DB.prepare(
       'SELECT ' + documentFields + ', share_expires_at, share_password_salt, share_password_hash ' +
-      "FROM documents WHERE share_token = ? AND state = 'ready' AND " + shareExpiryFilter,
+      "FROM documents WHERE share_token = ? AND state = 'ready' AND " + shareExpiryFilter + ' AND ' + activeDocumentOwner,
     ).bind(token).first();
     if (!record) throw missing();
     if (action === 'verify') return verifySharePassword(request, env, token, record);

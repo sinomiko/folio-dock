@@ -92,6 +92,10 @@
       </form>
       <p id="admin-access-error" class="form-error" role="alert" hidden></p>
     </section>
+    <nav id="admin-sections" class="admin-sections" aria-label="后台功能" hidden>
+      <button id="admin-docs-tab" class="button button-outline" type="button" aria-controls="admin-console" aria-pressed="true">文档管理</button>
+      <button id="admin-users-tab" class="button button-outline" type="button" aria-controls="admin-users" aria-pressed="false">用户管理</button>
+    </nav>
     <section id="admin-console" aria-label="文档管理" hidden>
       <div class="admin-stats">
         <div class="admin-card"><h2>文档记录</h2><strong id="admin-total">–</strong></div>
@@ -121,6 +125,27 @@
         <p id="admin-page" class="muted"></p>
         <button id="admin-prev" class="button button-outline" type="button" disabled>上一页</button>
         <button id="admin-next" class="button button-outline" type="button" disabled>下一页</button>
+      </div>
+    </section>
+    <section id="admin-users" aria-label="用户管理" hidden>
+      <div class="library-header admin-toolbar">
+        <form id="admin-users-search-form" class="filters">
+          <label class="search"><span class="icon-search" aria-hidden="true"></span><input id="admin-users-search" type="search" maxlength="32" placeholder="搜索用户名" aria-label="搜索用户名"></label>
+          <button class="button button-outline" type="submit">搜索</button>
+        </form>
+      </div>
+      <p id="admin-users-error" class="form-error admin-error" role="alert" hidden></p>
+      <div class="library-body admin-table admin-users-table">
+        <table aria-label="站点用户">
+          <thead><tr><th scope="col">用户名</th><th scope="col">角色</th><th scope="col">状态</th><th scope="col">文档数</th><th scope="col">操作</th></tr></thead>
+          <tbody id="admin-users-rows"></tbody>
+        </table>
+        <p id="admin-users-empty" class="empty muted" hidden></p>
+      </div>
+      <div class="pagination">
+        <p id="admin-users-page" class="muted"></p>
+        <button id="admin-users-prev" class="button button-outline" type="button" disabled>上一页</button>
+        <button id="admin-users-next" class="button button-outline" type="button" disabled>下一页</button>
       </div>
     </section>
   </main>
@@ -227,7 +252,7 @@
 
   <dialog id="admin-user-dialog" class="dialog" aria-labelledby="admin-user-title">
     <div class="dialog-top"><h2 id="admin-user-title">添加用户</h2><button class="close" data-close="admin-user-dialog" aria-label="关闭" type="button">×</button></div>
-    <p class="muted">创建普通账号。用户可使用下方设置的密码登录。</p>
+    <p id="admin-user-description" class="muted">创建普通账号。用户可使用下方设置的密码登录。</p>
     <form id="admin-user-form">
       <label>用户名<input name="username" minlength="3" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
       <label>登录密码<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="至少 12 位字符" required></label>

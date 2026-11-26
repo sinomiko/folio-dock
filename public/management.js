@@ -1,3 +1,5 @@
+import { setupAdminUsers } from './admin-users.js';
+
 const $ = selector => document.querySelector(selector);
 
 export function setupManagement({ api, setMessage, toast, prettySize, dateText, isAdminPage, login, activate }) {
@@ -90,11 +92,8 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
   const cleanup = $('#admin-cleanup');
   const rows = $('#admin-rows');
   const dialog = $('#admin-confirm-dialog');
-  const userDialog = $('#admin-user-dialog');
-  const userForm = $('#admin-user-form');
-  const userSubmit = $('#admin-user-submit');
-  const closeUserDialog = userDialog.querySelector('[data-close]');
-  const addUser = $('#admin-add-user');
+  const confirmSubmit = $('#admin-confirm-submit');
+  const confirmClose = Array.from(dialog.querySelectorAll('[data-close]'));
   const selected = new Set();
   let page = 1;
   let lastPage = 1;
@@ -104,7 +103,10 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
   let loading = false;
   let authorized = false;
   let requestId = 0;
+  let accountRevision = 0;
   let confirmAction;
+  let activePanel = 'documents';
+  const userList = setupAdminUsers({ api, setMessage, toast, confirm, onCreated: () => showPanel('users') });
 
   function syncControls() {
     const selectable = docs.filter(doc => doc.state !== 'pending').length;
@@ -118,12 +120,28 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
     $('#admin-next').disabled = loading || page >= lastPage;
   }
 
-  function confirm(title, detail, action) {
+  function confirm(title, detail, action, danger = true) {
     confirmAction = action;
     $('#admin-confirm-title').textContent = title;
     $('#admin-confirm-detail').textContent = detail;
+    confirmSubmit.classList.toggle('button-danger', danger);
+    confirmSubmit.classList.toggle('button-primary', !danger);
     setMessage($('#admin-confirm-error'), '');
     dialog.showModal();
+  }
+
+  function refreshPanel() {
+    return activePanel === 'users' ? userList.load() : load();
+  }
+
+  function showPanel(panel) {
+    activePanel = panel;
+    const users = panel === 'users';
+    $('#admin-console').hidden = !authorized || users;
+    $('#admin-users').hidden = !authorized || !users;
+    $('#admin-docs-tab').setAttribute('aria-pressed', String(!users));
+    $('#admin-users-tab').setAttribute('aria-pressed', String(users));
+    if (authorized) void refreshPanel();
   }
 
   function confirmDelete(ids, name) {
@@ -187,7 +205,7 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
     const params = new URLSearchParams({ q: query, filter: $('#admin-filter').value, page });
     try {
       const data = await api('/api/admin/documents?' + params);
-      if (current !== requestId) return;
+      if (current !== requestId || activePanel !== 'documents') return;
       lastPage = Math.max(1, Math.ceil(data.total / data.page_size));
       if (page > lastPage) {
         page = lastPage;
@@ -202,7 +220,7 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
       renderRows();
       setMessage($('#admin-empty'), docs.length ? '' : '暂无匹配的文档。');
     } catch (error) {
-      if (current !== requestId) return;
+      if (current !== requestId || activePanel !== 'documents') return;
       cleanable = 0;
       lastPage = 1;
       setMessage($('#admin-empty'), '');
@@ -216,36 +234,8 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
   }
 
   $('#admin-login').addEventListener('click', login);
-  addUser.addEventListener('click', () => {
-    userDialog.showModal();
-    userForm.elements.username.focus();
-  });
-  userDialog.addEventListener('close', () => {
-    userForm.reset();
-    setMessage($('#admin-user-error'), '');
-  });
-  userDialog.addEventListener('cancel', event => {
-    if (userSubmit.disabled) event.preventDefault();
-  });
-  userForm.addEventListener('submit', async event => {
-    event.preventDefault();
-    setMessage($('#admin-user-error'), '');
-    userSubmit.disabled = true;
-    closeUserDialog.disabled = true;
-    try {
-      const account = await api('/api/admin/users', {
-        method: 'POST',
-        json: Object.fromEntries(new FormData(userForm)),
-      });
-      userDialog.close();
-      toast('已创建账号 ' + account.username);
-    } catch (error) {
-      if (userDialog.open) setMessage($('#admin-user-error'), error.message);
-    } finally {
-      userSubmit.disabled = false;
-      closeUserDialog.disabled = false;
-    }
-  });
+  $('#admin-docs-tab').addEventListener('click', () => showPanel('documents'));
+  $('#admin-users-tab').addEventListener('click', () => showPanel('users'));
   $('#admin-activate').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -287,37 +277,51 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
       return '已清理 ' + result.deleted + ' 条记录';
     },
   ));
-  $('#admin-confirm-submit').addEventListener('click', async event => {
-    const button = event.currentTarget;
-    button.disabled = true;
+  dialog.addEventListener('cancel', event => {
+    if (confirmSubmit.disabled) event.preventDefault();
+  });
+  confirmSubmit.addEventListener('click', async () => {
+    confirmSubmit.disabled = true;
+    for (const button of confirmClose) button.disabled = true;
     setMessage($('#admin-confirm-error'), '');
     try {
       const result = await confirmAction();
       dialog.close();
       toast(result);
-      await load();
+      await refreshPanel();
     } catch (error) {
       setMessage($('#admin-confirm-error'), error.message);
     } finally {
-      button.disabled = false;
+      confirmSubmit.disabled = false;
+      for (const button of confirmClose) button.disabled = false;
     }
   });
 
   return {
     accountChanged(username, isAdmin) {
+      const revision = ++accountRevision;
       authorized = isAdmin;
       requestId += 1;
-      $('#admin-console').hidden = !authorized;
-      addUser.hidden = !authorized;
-      if (!authorized && userDialog.open) userDialog.close();
+      $('#admin-sections').hidden = !authorized;
+      $('#admin-add-user').hidden = !authorized;
+      if (!authorized) userList.reset();
+      showPanel(authorized ? activePanel : 'documents');
       $('#admin-access').hidden = authorized;
       $('#admin-login').hidden = Boolean(username);
-      $('#admin-activate').hidden = !username;
+      $('#admin-activate').hidden = true;
       $('#admin-access-title').textContent = username ? '需要管理员权限' : '登录管理后台';
-      $('#admin-access-detail').textContent = username ? '首次设置时，使用独立的激活码授权当前账号。' :
+      $('#admin-access-detail').textContent = username ? '普通用户可以在工作台上传、预览和分享文档。' :
         '请先登录 Folio Dock，再进入管理后台。';
       setMessage($('#admin-access-error'), '');
-      if (authorized) void load();
+      if (username && !authorized) {
+        api('/api/admin/activate').then(({ available }) => {
+          if (revision !== accountRevision || !available) return;
+          $('#admin-access-detail').textContent = '首次设置时，使用管理员激活码授权当前账号。';
+          $('#admin-activate').hidden = false;
+        }).catch(error => {
+          if (revision === accountRevision) setMessage($('#admin-access-error'), error.message);
+        });
+      }
     },
   };
 }
