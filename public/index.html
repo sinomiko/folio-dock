@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8f7fc">
+  <title>Folio Dock · AI 文档工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="/" aria-label="Folio Dock 首页"><span class="brand-mark" aria-hidden="true"></span>Folio<span>Dock</span></a>
+      <div class="header-actions">
+        <span id="account" class="account" hidden></span>
+        <a id="admin-link" class="button button-outline" href="/admin" hidden>管理后台</a>
+        <button id="mcp-open" class="button button-outline" type="button" hidden>MCP 接入</button>
+        <button id="login" class="button button-outline" type="button" hidden>登录</button>
+        <button id="register" class="button button-primary" type="button" hidden>注册</button>
+        <button id="logout" class="button button-outline" type="button" hidden>退出</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="workspace" class="main workspace" hidden>
+    <section class="hero">
+      <div class="hero-content">
+        <p class="hero-label">AI 文档工作台</p>
+        <h1>上传文档，<br>用链接分享。</h1>
+        <p class="hero-detail">为 AI 生成的网页、报告和笔记留一个可随时打开的链接。</p>
+        <div class="hero-actions">
+          <button id="hero-upload" class="button button-primary hero-button" type="button" disabled><span class="icon-upload" aria-hidden="true"></span> 上传文档</button>
+          <button id="open-code" class="button button-outline" type="button">输入分享码</button>
+        </div>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <div class="orbit orbit-outer"></div><div class="orbit orbit-inner"></div>
+        <div class="art-paper paper-back"><i></i><i></i><i></i></div>
+        <div class="art-paper paper-front"><div class="paper-dots"><i></i><i></i><i></i></div><div class="paper-bar"></div><div class="paper-chart"><i></i><i></i><i></i><i></i></div><div class="paper-lines"><i></i><i></i></div></div>
+        <div class="paper-link"><i></i><i></i></div>
+      </div>
+    </section>
+
+    <section id="drop-zone" class="drop-zone" aria-label="上传文档">
+      <span class="drop-icon" aria-hidden="true"><span class="icon-upload"></span></span>
+      <div class="drop-text">
+        <h2>拖放文件到这里</h2>
+        <p>图片、MHTML、Office、HTML、PDF ≤ 15 MB · Markdown ≤ 1 MB · TXT ≤ 2 MB</p>
+      </div>
+      <button id="pick-files" class="button button-outline" type="button" disabled>选择文件</button>
+      <input id="file-input" type="file" accept=".html,.htm,.md,.markdown,.pdf,.txt,.png,.jpg,.jpeg,.gif,.webp,.avif,.bmp,.svg,.mhtml,.mht,.xlsx,.xls,.docx,.doc,.pptx,.ppt" multiple hidden>
+    </section>
+    <p id="upload-status" class="upload-status" role="status" hidden></p>
+
+    <section class="library" aria-labelledby="library-title">
+      <div class="library-header">
+        <div><h2 id="library-title">我的文档</h2><p id="library-count" class="muted"></p></div>
+        <div id="filters" class="filters" hidden>
+          <label class="search"><span class="icon-search" aria-hidden="true"></span><input id="search" type="search" placeholder="搜索文档" aria-label="搜索文档"></label>
+          <select id="filter" aria-label="筛选分享状态"><option value="all">全部文档</option><option value="shared">已分享</option><option value="private">私有</option></select>
+        </div>
+      </div>
+      <div id="library-body" class="library-body">
+        <div id="empty" class="empty">
+          <div class="empty-mark" aria-hidden="true"><span></span></div>
+          <h3 id="empty-title">正在加载文档</h3>
+          <p id="empty-detail"></p>
+          <button id="empty-action" class="button button-outline" type="button" hidden></button>
+        </div>
+        <div id="document-table" hidden>
+          <div class="table-header doc-grid" aria-hidden="true"><span>文件名称</span><span>分享状态</span><span>上传时间</span><span>操作</span></div>
+          <ul id="documents" class="document-list" aria-label="我的文档"></ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <main id="admin" class="main admin" hidden>
+    <a class="back" href="/">‹ 返回工作台</a>
+    <div class="admin-title"><h1>管理后台</h1><p class="muted">管理站点上的文档和存储。</p></div>
+    <section id="admin-access" class="admin-card">
+      <h2 id="admin-access-title">正在检测权限</h2>
+      <p id="admin-access-detail" class="muted"></p>
+      <button id="admin-login" class="button button-primary" type="button" hidden>登录</button>
+      <form id="admin-activate" class="admin-form" hidden>
+        <label>激活码<input name="code" type="password" maxlength="100" autocomplete="off" required></label>
+        <button id="admin-activate-submit" class="button button-primary" type="submit">激活管理员</button>
+      </form>
+      <p id="admin-access-error" class="form-error" role="alert" hidden></p>
+    </section>
+    <section id="admin-console" aria-label="文档管理" hidden>
+      <div class="admin-stats">
+        <div class="admin-card"><h2>文档记录</h2><strong id="admin-total">–</strong></div>
+        <div class="admin-card"><h2>文件总大小</h2><strong id="admin-size">–</strong></div>
+        <div class="admin-card admin-cleanup-card">
+          <div><h2>待清理记录</h2><strong id="admin-cleanable">–</strong></div>
+          <button id="admin-cleanup" class="button button-outline" type="button" disabled>清理</button>
+        </div>
+      </div>
+      <div class="library-header admin-toolbar">
+        <form id="admin-search-form" class="filters">
+          <label class="search"><span class="icon-search" aria-hidden="true"></span><input id="admin-search" type="search" maxlength="120" placeholder="搜索文件名或上传者" aria-label="搜索文件名或上传者"></label>
+          <select id="admin-filter" aria-label="筛选文档状态"><option value="all">全部文档</option><option value="shared">已分享</option><option value="private">私有</option><option value="incomplete">未完成</option></select>
+          <button class="button button-outline" type="submit">搜索</button>
+        </form>
+        <button id="admin-bulk" class="button button-danger" type="button" disabled>删除所选</button>
+      </div>
+      <p id="admin-error" class="form-error admin-error" role="alert" hidden></p>
+      <div class="library-body admin-table">
+        <table aria-label="站点文档">
+          <thead><tr><th><input id="admin-select-all" type="checkbox" aria-label="选择本页可删除的文档"></th><th scope="col">文件名称</th><th scope="col">上传者</th><th scope="col">状态</th><th scope="col">上传时间</th><th scope="col">操作</th></tr></thead>
+          <tbody id="admin-rows"></tbody>
+        </table>
+        <p id="admin-empty" class="empty muted">正在加载文档…</p>
+      </div>
+      <div class="pagination">
+        <p id="admin-page" class="muted"></p>
+        <button id="admin-prev" class="button button-outline" type="button" disabled>上一页</button>
+        <button id="admin-next" class="button button-outline" type="button" disabled>下一页</button>
+      </div>
+    </section>
+  </main>
+
+  <main id="viewer" class="main viewer" hidden>
+    <a id="viewer-back" class="back" href="/">‹ 返回工作台</a>
+    <section class="viewer-panel">
+      <div class="viewer-header">
+        <div id="viewer-icon" class="file-icon" aria-hidden="true"></div>
+        <div class="viewer-name"><h1 id="viewer-title" dir="auto">正在打开文档…</h1><p id="viewer-meta" class="muted"></p></div>
+        <div id="viewer-actions" class="viewer-actions" hidden>
+          <button id="viewer-share" class="button button-outline" type="button" hidden>分享设置</button>
+          <a id="viewer-download" class="button button-primary">下载原文件</a>
+        </div>
+      </div>
+      <p id="viewer-warning" class="viewer-warning" hidden></p>
+      <p id="viewer-error" class="viewer-error" role="alert" hidden></p>
+      <form id="verify-share" class="verify-share" hidden>
+        <label for="verify-password">分享口令</label>
+        <input id="verify-password" type="password" maxlength="64" autocomplete="off" required>
+        <p id="verify-error" class="form-error" role="alert" hidden></p>
+        <button id="verify-submit" class="button button-primary" type="submit">验证并打开</button>
+      </form>
+      <div id="preview" class="preview"></div>
+    </section>
+  </main>
+
+  <dialog id="auth-dialog" class="dialog">
+    <div class="dialog-top"><h2 id="auth-title">登录</h2><button class="close" data-close="auth-dialog" aria-label="关闭" type="button">×</button></div>
+    <p id="auth-intro" class="muted"></p>
+    <form id="auth-form">
+      <label>用户名<input name="username" autocomplete="username" minlength="3" maxlength="32" required></label>
+      <label>密码<input name="password" type="password" minlength="12" maxlength="128" required></label>
+      <label id="invite-label" hidden>邀请码<input name="invite" autocomplete="off" maxlength="100"></label>
+      <p id="auth-error" class="form-error" role="alert" hidden></p>
+      <button id="auth-submit" class="button button-primary wide" type="submit">登录</button>
+    </form>
+    <button id="auth-switch" class="text-button" type="button"></button>
+  </dialog>
+
+  <dialog id="share-dialog" class="dialog">
+    <div class="dialog-top"><h2>分享文档</h2><button class="close" data-close="share-dialog" aria-label="关闭" type="button">×</button></div>
+    <p id="share-name" class="muted" dir="auto"></p>
+    <p id="share-detail" class="share-detail"></p>
+    <div id="share-box" hidden>
+      <label class="share-label" for="share-link">分享链接</label>
+      <div class="share-box"><input id="share-link" type="url" readonly><button id="share-copy" class="button button-outline" type="button">复制链接</button></div>
+      <label class="share-label" for="share-code">分享码</label>
+      <div class="share-box"><input id="share-code" class="code-input" readonly><button id="share-copy-code" class="button button-outline" type="button">复制分享码</button></div>
+    </div>
+    <form id="share-settings">
+      <label for="share-expiry">有效期<select id="share-expiry">
+        <option value="keep">保留当前有效期</option><option value="never">永久有效</option>
+        <option value="3600">1 小时</option><option value="86400">1 天</option>
+        <option value="604800">7 天</option><option value="2592000">30 天</option>
+      </select></label>
+      <label for="share-password-mode">访问方式<select id="share-password-mode">
+        <option value="keep">保留当前口令</option><option value="none">直接访问</option><option value="set">设置分享口令</option>
+      </select></label>
+      <label id="share-password-label" for="share-password" hidden>分享口令<input id="share-password" type="password" minlength="4" maxlength="64" autocomplete="new-password" placeholder="4–64 位字符"></label>
+      <p id="share-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="share-stop" class="button button-outline" type="button" hidden>关闭分享</button>
+        <button id="share-toggle" class="button button-primary" type="submit">开启链接分享</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="code-dialog" class="dialog">
+    <div class="dialog-top"><h2>输入分享码</h2><button class="close" data-close="code-dialog" aria-label="关闭" type="button">×</button></div>
+    <form id="code-form">
+      <label for="code-value">分享码<input id="code-value" class="code-input" type="text" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="40" autocomplete="off" autocapitalize="characters" spellcheck="false" required></label>
+      <p id="code-error" class="form-error" role="alert" hidden></p>
+      <button id="code-submit" class="button button-primary wide" type="submit">打开文档</button>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" class="dialog">
+    <div class="dialog-top"><h2>删除文档</h2><button class="close" data-close="delete-dialog" aria-label="关闭" type="button">×</button></div>
+    <p id="delete-name" class="muted" dir="auto"></p>
+    <p>删除后原文件将被移除，分享链接也会失效。</p>
+    <p id="delete-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-outline" data-close="delete-dialog" type="button">取消</button>
+      <button id="delete-confirm" class="button button-danger" type="button">删除文档</button>
+    </div>
+  </dialog>
+
+  <dialog id="mcp-dialog" class="dialog">
+    <div class="dialog-top"><h2>MCP 接入</h2><button class="close" data-close="mcp-dialog" aria-label="关闭" type="button">×</button></div>
+    <p class="muted">使用 Streamable HTTP 连接。令牌可上传、列出和分享你自己的文档。</p>
+    <label class="config-field">MCP 地址<input id="mcp-url" type="url" readonly></label>
+    <p id="mcp-status" class="muted"></p>
+    <div id="mcp-issued" hidden>
+      <label class="config-field">令牌（只显示一次）<input id="mcp-token" type="text" autocomplete="off" readonly></label>
+      <button id="mcp-copy" class="button button-outline" type="button">复制令牌</button>
+    </div>
+    <p id="mcp-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="mcp-revoke" class="button button-outline" type="button" hidden>撤销令牌</button>
+      <button id="mcp-generate" class="button button-primary" type="button" disabled>生成令牌</button>
+    </div>
+  </dialog>
+
+  <dialog id="admin-confirm-dialog" class="dialog">
+    <div class="dialog-top"><h2 id="admin-confirm-title">确认操作</h2><button class="close" data-close="admin-confirm-dialog" aria-label="关闭" type="button">×</button></div>
+    <p id="admin-confirm-detail"></p>
+    <p id="admin-confirm-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button class="button button-outline" data-close="admin-confirm-dialog" type="button">取消</button>
+      <button id="admin-confirm-submit" class="button button-danger" type="button">确认</button>
+    </div>
+  </dialog>
+
+  <template id="row-template">
+    <li class="doc-row doc-grid">
+      <a class="file" data-view><span class="file-icon" aria-hidden="true"></span><span class="file-text"><strong dir="auto"></strong><small></small></span></a>
+      <span class="visibility"></span>
+      <time></time>
+      <div class="row-actions"><button class="text-button" type="button" data-share>分享</button><button class="text-button text-danger" type="button" data-delete>删除</button></div>
+    </li>
+  </template>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

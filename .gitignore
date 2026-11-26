@@ -1,0 +1,9 @@
+node_modules/
+.wrangler/
+.dev.vars*
+.env*
+public/preview.js
+public/docx-layout.js
+public/pptx-layout.js
+!.dev.vars.example
+wrangler.local.*

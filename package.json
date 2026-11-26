@@ -1,0 +1,29 @@
+{
+  "name": "folio-dock",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "build:preview": "esbuild preview=src/preview/index.js src/preview/docx-layout.js src/preview/pptx-layout.js --bundle --platform=browser --minify --legal-comments=eof --outdir=public",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "check": "node --check src/index.js && node --check src/mcp.js && node --check public/app.js && node --check public/management.js && npm run build:preview"
+  },
+  "dependencies": {
+    "@aiden0z/pptx-renderer": "1.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "docx-preview": "0.4.1",
+    "fflate": "0.8.3",
+    "markdown-it": "15.0.3",
+    "postal-mime": "4.2.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "wrangler": "4.148.0"
+  }
+}
