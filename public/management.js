@@ -90,6 +90,11 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
   const cleanup = $('#admin-cleanup');
   const rows = $('#admin-rows');
   const dialog = $('#admin-confirm-dialog');
+  const userDialog = $('#admin-user-dialog');
+  const userForm = $('#admin-user-form');
+  const userSubmit = $('#admin-user-submit');
+  const closeUserDialog = userDialog.querySelector('[data-close]');
+  const addUser = $('#admin-add-user');
   const selected = new Set();
   let page = 1;
   let lastPage = 1;
@@ -211,6 +216,36 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
   }
 
   $('#admin-login').addEventListener('click', login);
+  addUser.addEventListener('click', () => {
+    userDialog.showModal();
+    userForm.elements.username.focus();
+  });
+  userDialog.addEventListener('close', () => {
+    userForm.reset();
+    setMessage($('#admin-user-error'), '');
+  });
+  userDialog.addEventListener('cancel', event => {
+    if (userSubmit.disabled) event.preventDefault();
+  });
+  userForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    setMessage($('#admin-user-error'), '');
+    userSubmit.disabled = true;
+    closeUserDialog.disabled = true;
+    try {
+      const account = await api('/api/admin/users', {
+        method: 'POST',
+        json: Object.fromEntries(new FormData(userForm)),
+      });
+      userDialog.close();
+      toast('已创建账号 ' + account.username);
+    } catch (error) {
+      if (userDialog.open) setMessage($('#admin-user-error'), error.message);
+    } finally {
+      userSubmit.disabled = false;
+      closeUserDialog.disabled = false;
+    }
+  });
   $('#admin-activate').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -273,6 +308,8 @@ function setupAdmin({ api, setMessage, toast, prettySize, dateText, login, activ
       authorized = isAdmin;
       requestId += 1;
       $('#admin-console').hidden = !authorized;
+      addUser.hidden = !authorized;
+      if (!authorized && userDialog.open) userDialog.close();
       $('#admin-access').hidden = authorized;
       $('#admin-login').hidden = Boolean(username);
       $('#admin-activate').hidden = !username;

@@ -5,7 +5,13 @@ Folio Dock 是一款可自建的文档上传、在线预览和分享工具。它
 - 上传 HTML、Markdown、PDF、TXT、图片、MHTML、Excel、Word 和 PowerPoint。
 - 通过链接或分享码免登录分享，可设置访问口令和有效期。关闭分享会同时撤销两个入口。
 - 通过 MCP 上传文件、查询自己的文档和管理分享。
-- 通过管理后台按文件名、上传者和状态筛选，删除文档或清理未完成的上传和删除。
+- 通过管理后台添加普通用户，筛选和删除文档，以及清理未完成的上传和删除。
+
+## 界面截图
+
+![文档工作台与分享入口](docs/screenshots/workspace.png)
+
+![管理后台与添加用户入口](docs/screenshots/admin.png)
 
 ## 在线预览
 
@@ -24,7 +30,7 @@ Folio Dock 是一款可自建的文档上传、在线预览和分享工具。它
 
 在启动前为 .dev.vars 中的 INVITE_CODE、ADMIN_SETUP_CODE 和 PASSWORD_PEPPER 各填入一个独立的随机值。可分别用 openssl rand -hex 32 生成三个值。
 
-打开 Wrangler 显示的本地地址，用邀请码注册。在 /admin 输入管理员激活码完成首次设置。
+打开 Wrangler 显示的本地地址，用邀请码注册。在 /admin 输入管理员激活码完成首次设置。管理员可点击「添加用户」，设置用户名和至少 12 位的登录密码。新用户可直接从首页登录。
 
 ## 部署到 Cloudflare
 

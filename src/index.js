@@ -146,6 +146,27 @@ async function getUser(request, env) {
   ).bind(hex(await digest(token)), now()).first();
 }
 
+function readCredentials(input) {
+  const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
+  const password = typeof input.password === 'string' ? input.password : '';
+  if (!/^[a-z0-9_][a-z0-9_.-]{2,31}$/.test(username) || password.length < 12 || password.length > 128) {
+    throw new HttpError(400, '用户名须为 3–32 位英文、数字或 ._-，密码须为 12–128 位。');
+  }
+  return { username, password };
+}
+
+async function createUser(env, username, password) {
+  if (!env.PASSWORD_PEPPER) throw new HttpError(503, '创建用户暂不可用。');
+  const user = { id: randomHex(16), username };
+  const salt = randomHex(16);
+  const verifier = hex(await passwordVerifier(password, salt, env.PASSWORD_PEPPER));
+  const result = await env.DB.prepare(
+    'INSERT INTO users (id, username, salt, verifier) VALUES (?, ?, ?, ?) ON CONFLICT(username) DO NOTHING',
+  ).bind(user.id, username, salt, verifier).run();
+  if (!result.meta.changes) throw new HttpError(409, '此用户名已被使用。');
+  return user;
+}
+
 async function auth(request, env, registration) {
   const ip = request.headers.get('CF-Connecting-IP') || 'local';
   const { success } = await env.AUTH_LIMIT.limit({ key: 'folio-auth:' + ip });
@@ -153,11 +174,7 @@ async function auth(request, env, registration) {
   if (!env.PASSWORD_PEPPER) throw new HttpError(503, '登录暂不可用。');
 
   const input = await readJson(request);
-  const username = typeof input.username === 'string' ? input.username.trim().toLowerCase() : '';
-  const password = typeof input.password === 'string' ? input.password : '';
-  if (!/^[a-z0-9_][a-z0-9_.-]{2,31}$/.test(username) || password.length < 12 || password.length > 128) {
-    throw new HttpError(400, '用户名须为 3–32 位英文、数字或 ._-，密码须为 12–128 位。');
-  }
+  const { username, password } = readCredentials(input);
 
   let user;
   if (registration) {
@@ -166,13 +183,7 @@ async function auth(request, env, registration) {
     const [provided, expected] = await Promise.all([digest(code), digest(env.INVITE_CODE)]);
     if (!crypto.subtle.timingSafeEqual(provided, expected)) throw new HttpError(403, '邀请码无效。');
 
-    user = { id: randomHex(16), username };
-    const salt = randomHex(16);
-    const verifier = hex(await passwordVerifier(password, salt, env.PASSWORD_PEPPER));
-    const result = await env.DB.prepare(
-      'INSERT INTO users (id, username, salt, verifier) VALUES (?, ?, ?, ?) ON CONFLICT(username) DO NOTHING',
-    ).bind(user.id, username, salt, verifier).run();
-    if (!result.meta.changes) throw new HttpError(409, '此用户名已被使用。');
+    user = await createUser(env, username, password);
   } else {
     user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
     const verifier = await passwordVerifier(password, user?.salt || '0'.repeat(32), env.PASSWORD_PEPPER);
@@ -539,6 +550,11 @@ async function admin(request, env, url, user) {
   const { pathname } = url;
   if (pathname === '/api/admin/activate' && request.method === 'POST') return activateAdmin(request, env, user);
   if (!user.is_admin) throw new HttpError(403, '需要管理员权限。');
+  if (pathname === '/api/admin/users' && request.method === 'POST') {
+    const { username, password } = readCredentials(await readJson(request));
+    await createUser(env, username, password);
+    return json({ username }, 201);
+  }
   if (pathname === '/api/admin/documents' && request.method === 'GET') return adminDocuments(env, url);
   if (pathname === '/api/admin/cleanup' && request.method === 'POST') {
     return json({ deleted: await cleanupIncomplete(env) });

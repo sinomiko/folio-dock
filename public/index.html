@@ -78,7 +78,10 @@
 
   <main id="admin" class="main admin" hidden>
     <a class="back" href="/">‹ 返回工作台</a>
-    <div class="admin-title"><h1>管理后台</h1><p class="muted">管理站点上的文档和存储。</p></div>
+    <div class="admin-title">
+      <div><h1>管理后台</h1><p class="muted">管理用户、文档和存储。</p></div>
+      <button id="admin-add-user" class="button button-primary" type="button" hidden>添加用户</button>
+    </div>
     <section id="admin-access" class="admin-card">
       <h2 id="admin-access-title">正在检测权限</h2>
       <p id="admin-access-detail" class="muted"></p>
@@ -220,6 +223,17 @@
       <button id="mcp-revoke" class="button button-outline" type="button" hidden>撤销令牌</button>
       <button id="mcp-generate" class="button button-primary" type="button" disabled>生成令牌</button>
     </div>
+  </dialog>
+
+  <dialog id="admin-user-dialog" class="dialog" aria-labelledby="admin-user-title">
+    <div class="dialog-top"><h2 id="admin-user-title">添加用户</h2><button class="close" data-close="admin-user-dialog" aria-label="关闭" type="button">×</button></div>
+    <p class="muted">创建普通账号。用户可使用下方设置的密码登录。</p>
+    <form id="admin-user-form">
+      <label>用户名<input name="username" minlength="3" maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" required></label>
+      <label>登录密码<input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" placeholder="至少 12 位字符" required></label>
+      <p id="admin-user-error" class="form-error" role="alert" hidden></p>
+      <button id="admin-user-submit" class="button button-primary wide" type="submit">创建账号</button>
+    </form>
   </dialog>
 
   <dialog id="admin-confirm-dialog" class="dialog">
