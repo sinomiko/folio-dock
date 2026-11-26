@@ -207,6 +207,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .viewer-error { color: #a3334f; }
 .preview iframe { display: block; border: 0; border-top: 1px solid var(--line); width: 100%; min-height: 65vh; background: #fff; }
 .preview > img { display: block; margin: 14px auto; width: auto; height: auto; max-width: calc(100% - 28px); max-height: 75vh; object-fit: contain; }
+.preview-fullscreen { overflow: hidden; }
+.viewer-panel[data-fullscreen] {
+  display: flex; flex-direction: column; width: 100%; height: 100%; height: 100dvh;
+  border: 0; border-radius: 0; background: var(--white);
+}
+.viewer-panel[data-fullscreen="viewport"] { position: fixed; inset: 0; z-index: 10; }
+.viewer-panel[data-fullscreen] .viewer-header {
+  flex: none; flex-wrap: nowrap; padding: max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 10px max(12px, env(safe-area-inset-left));
+}
+.viewer-panel[data-fullscreen] .viewer-name h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-panel[data-fullscreen] .viewer-actions { width: auto; }
+.viewer-panel[data-fullscreen] :is(#viewer-share, #viewer-download, .viewer-warning) { display: none; }
+.viewer-panel[data-fullscreen] .preview { flex: 1; min-height: 0; }
+.viewer-panel[data-fullscreen] .preview iframe { height: 100%; min-height: 0; }
+.viewer-panel[data-fullscreen] .preview > img {
+  width: 100%; height: 100%; min-height: 0; max-width: none; max-height: none; margin: 0;
+  padding: 10px max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+}
 .dialog { width: min(460px, calc(100% - 30px)); max-height: calc(100% - 30px); border-radius: 17px; border: 1px solid var(--line); color: var(--ink); padding: 23px; box-shadow: 0 22px 68px #24194141; }
 .dialog::backdrop { background: #21183082; }
 .dialog-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -253,7 +271,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .file { gap: 7px; }
   .file-icon { flex-basis: 33px; height: 35px; }
   .viewer-header { flex-wrap: wrap; padding: 12px; }
-  .viewer-actions { width: 100%; justify-content: flex-end; }
+  .viewer-actions { width: 100%; justify-content: flex-end; flex-wrap: wrap; }
 }
 @media (max-width: 375px) {
   .hero-art { opacity: .25; }

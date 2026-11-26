@@ -4,6 +4,8 @@ import { formatShareCode, normalizeShareCode } from './share-code.js';
 const $ = selector => document.querySelector(selector);
 const workspace = $('#workspace');
 const viewer = $('#viewer');
+const viewerPanel = $('#viewer-panel');
+const fullscreenButton = $('#viewer-fullscreen');
 const authDialog = $('#auth-dialog');
 const shareDialog = $('#share-dialog');
 const codeDialog = $('#code-dialog');
@@ -43,6 +45,7 @@ let selectedDelete = null;
 let openDocument = null;
 let toastTimer;
 let sessionGeneration = 0;
+let fullscreenPending = false;
 
 async function api(path, options = {}) {
   const { method = 'GET', json, body, headers: extraHeaders } = options;
@@ -89,10 +92,50 @@ function setIcon(icon, format) {
   icon.dataset.format = format;
 }
 
+function syncPreviewFullscreen(useViewport = viewerPanel.dataset.fullscreen === 'viewport') {
+  const native = document.fullscreenElement === viewerPanel;
+  const fullscreen = native || useViewport;
+  if (fullscreen) viewerPanel.dataset.fullscreen = native ? 'native' : 'viewport';
+  else delete viewerPanel.dataset.fullscreen;
+  document.documentElement.classList.toggle('preview-fullscreen', fullscreen);
+  $('.site-header').inert = fullscreen;
+  $('#viewer-back').inert = fullscreen;
+  fullscreenButton.textContent = fullscreen ? '退出全屏' : '全屏预览';
+}
+
+async function togglePreviewFullscreen() {
+  if (fullscreenPending) return;
+  fullscreenPending = true;
+  try {
+    if (document.fullscreenElement === viewerPanel) {
+      await document.exitFullscreen();
+    } else if (viewerPanel.dataset.fullscreen === 'viewport') {
+      syncPreviewFullscreen(false);
+    } else {
+      let native = false;
+      if (document.fullscreenEnabled && viewerPanel.requestFullscreen) {
+        try {
+          await viewerPanel.requestFullscreen();
+          native = document.fullscreenElement === viewerPanel;
+        } catch {
+          // Some browsers and embedded pages deny native fullscreen.
+        }
+      }
+      syncPreviewFullscreen(!native);
+    }
+  } catch {
+    syncPreviewFullscreen();
+    toast('暂时无法切换全屏，请重试。');
+  } finally {
+    fullscreenPending = false;
+  }
+}
+
 function showDocumentPreview(document, endpoint) {
   const { name, format } = document;
   setMessage($('#viewer-warning'), previewMessages[format] || '');
-  if (downloadOnly.has(format)) return;
+  fullscreenButton.hidden = downloadOnly.has(format);
+  if (fullscreenButton.hidden) return;
   const preview = $('#preview');
   if (images.has(format)) {
     const image = window.document.createElement('img');
@@ -341,6 +384,7 @@ async function showViewer() {
   const endpoint = (kind === 'share' ? '/api/shared/' : '/api/documents/') + id;
   $('#viewer-back').textContent = isShare ? '‹ Folio Dock' : '‹ 返回工作台';
   $('#viewer-actions').hidden = true;
+  fullscreenButton.hidden = true;
   $('#viewer-warning').hidden = true;
   $('#verify-share').hidden = true;
   $('#viewer-title').textContent = '正在打开文档…';
@@ -421,6 +465,15 @@ $('#pick-files').addEventListener('click', chooseFiles);
 $('#search').addEventListener('input', renderDocuments);
 $('#filter').addEventListener('change', renderDocuments);
 $('#viewer-share').addEventListener('click', () => showShare(openDocument));
+fullscreenButton.addEventListener('click', togglePreviewFullscreen);
+document.addEventListener('fullscreenchange', () => syncPreviewFullscreen());
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && viewerPanel.dataset.fullscreen === 'viewport') {
+    event.preventDefault();
+    syncPreviewFullscreen(false);
+    fullscreenButton.focus();
+  }
+});
 fileInput.addEventListener('change', () => {
   const files = Array.from(fileInput.files);
   fileInput.value = '';
