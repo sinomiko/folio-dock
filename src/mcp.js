@@ -2,9 +2,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { z } from 'zod';
 
-const maxFile = 4 * 1024 * 1024;
-const maxBase64 = 4 * Math.ceil(maxFile / 3);
+export const maxInlineFile = 4 * 1024 * 1024;
+const maxBase64 = 4 * Math.ceil(maxInlineFile / 3);
 export const maxMcpBody = 6 * 1024 * 1024;
+export const mcpUploadPath = '/mcp/upload';
 const sharingOptions = {
   expires_in: z.number().int().min(1).max(365 * 86400).nullable().optional()
     .describe('Seconds until expiration. Null means no expiry. Omit to keep the current expiry when editing an active share.'),
@@ -15,7 +16,7 @@ const sharingOptions = {
 export async function handleMcp(request, parsedBody, services) {
   const server = new McpServer(
     { name: 'folio-dock', version: '1.0.0' },
-    { instructions: 'Upload and manage your own documents. Uploads are private by default. Enable link sharing only when requested.' },
+    { instructions: 'Use prepare_document_upload to stream files up to 50 MiB. Uploads are private by default. Enable link sharing only when requested.' },
   );
   const result = operation => async input => {
     try {
@@ -36,16 +37,25 @@ export async function handleMcp(request, parsedBody, services) {
   }, result(({ query, limit }) => services.list(query, limit)));
 
   server.registerTool('upload_document', {
-    description: 'Upload HTML, Markdown, TXT, PDF, images, MHTML or Excel, Word and PowerPoint documents. Uploads are private unless share is true.',
+    description: 'Upload a small file inline (up to 4 MiB, subject to format limits). For larger files use prepare_document_upload. Uploads are private unless share is true.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     inputSchema: z.object({
       filename: z.string().min(1).max(180).describe('File name including its original extension, such as .png, .mhtml, .xlsx, .docx or .pptx.'),
-      text: z.string().min(1).max(maxFile).optional().describe('Raw HTML, Markdown or text. Supply either text or base64.'),
-      base64: z.string().min(1).max(maxBase64).optional().describe('Base64-encoded original file. Required for PDF, images and Office files. Maximum 4 MB after decode.'),
+      text: z.string().min(1).max(maxInlineFile).optional().describe('Raw HTML, Markdown or text. Supply either text or base64.'),
+      base64: z.string().min(1).max(maxBase64).optional().describe('Base64-encoded original file. Required for PDF, images and Office files. Maximum 4 MiB after decode.'),
       share: z.boolean().default(false).describe('Create a share link and share code. Defaults to false.'),
       ...sharingOptions,
     }).refine(input => (input.text === undefined) !== (input.base64 === undefined), 'Provide either text or base64.'),
   }, result(services.upload));
+
+  server.registerTool('prepare_document_upload', {
+    description: 'Get the HTTP request details for a streaming upload. Send the raw file as the PUT body with the returned headers and the same MCP Bearer token. Use the returned document ID from the PUT response to enable sharing if requested.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: z.object({
+      filename: z.string().min(1).max(180).describe('File name including its original extension.'),
+      size: z.number().int().positive().optional().describe('Original size in bytes. Limits are 50 MiB, 1 MiB for Markdown, and 2 MiB for TXT.'),
+    }),
+  }, result(services.prepareUpload));
 
   server.registerTool('set_document_sharing', {
     description: 'Create or update a share link and code with an optional password and expiry. Disable to revoke both.',

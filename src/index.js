@@ -1,5 +1,5 @@
 import MarkdownIt from 'markdown-it';
-import { handleMcp, maxMcpBody } from './mcp.js';
+import { handleMcp, maxInlineFile, maxMcpBody, mcpUploadPath } from './mcp.js';
 import { formats, formatAliases } from './formats.js';
 import { HttpError } from './http-error.js';
 import { streamUpload, uploadLength, validateUploadSignature } from './uploads.js';
@@ -257,7 +257,7 @@ async function cleanupIncomplete(env, owner = null) {
   return purgeDocuments(env, results.map(({ id }) => id));
 }
 
-async function upload(request, env, owner, ctx) {
+function storeStream(request, env, owner, ctx) {
   const name = cleanFilename(readFilename(request.headers.get('X-Folio-Filename')));
   const format = getFormat(name);
   const length = uploadLength(request, format);
@@ -265,7 +265,7 @@ async function upload(request, env, owner, ctx) {
     id => streamUpload(env.FILES, id, request.body, format, length));
   // Let cleanup finish when the client disconnects during an upload.
   ctx.waitUntil(stored.catch(() => {}));
-  return json({ document: await stored }, 201);
+  return stored;
 }
 
 async function storeDocument(env, owner, name, format, bytes, shared, settings = {}) {
@@ -487,7 +487,7 @@ async function verifySharePassword(request, env, token, share) {
   return json({ ok: true }, 200, { 'Set-Cookie': cookie });
 }
 
-async function mcp(request, env, url) {
+async function mcp(request, env, url, ctx) {
   const origin = request.headers.get('Origin');
   if (origin !== null && origin !== url.origin) throw new HttpError(403, '此请求不受信任。');
   const token = request.headers.get('Authorization')?.match(/^Bearer (fd_[a-f0-9]{64})$/i)?.[1];
@@ -498,10 +498,16 @@ async function mcp(request, env, url) {
   if (!user) return json({ error: '需要有效的 MCP 令牌。' }, 401, {
     'WWW-Authenticate': 'Bearer realm="Folio Dock"',
   });
-  if (request.method !== 'POST') return new Response(null, {
+  const streaming = url.pathname === mcpUploadPath;
+  const method = streaming ? 'PUT' : 'POST';
+  if (request.method !== method) return new Response(null, {
     status: 405,
-    headers: { ...security, 'Cache-Control': 'no-store', Allow: 'POST' },
+    headers: { ...security, 'Cache-Control': 'no-store', Allow: method },
   });
+  if (streaming) {
+    const document = await storeStream(request, env, user.user_id, ctx);
+    return json({ document }, 201);
+  }
 
   const body = await readJson(request, maxMcpBody);
   const result = await handleMcp(request, body, {
@@ -524,9 +530,22 @@ async function mcp(request, env, url) {
       } catch {
         throw new HttpError(400, 'base64 内容无效。');
       }
-      if (bytes.byteLength > 4 * MiB) throw new HttpError(413, 'MCP 单文件上限为 4 MB。');
+      if (bytes.byteLength > maxInlineFile) {
+        throw new HttpError(413, '内联上传上限为 4 MB，请通过 prepare_document_upload 流式上传。');
+      }
       const { share_token, ...doc } = await storeDocument(env, user.user_id, name, format, bytes, share, settings);
       return { ...doc, ...shareFields(url.origin, { ...doc, share_token }) };
+    },
+    async prepareUpload({ filename, size }) {
+      const name = cleanFilename(filename);
+      const max = formats[getFormat(name)].max;
+      if (size > max) throw new HttpError(413, '文件超出大小限制。');
+      return {
+        method: 'PUT',
+        upload_url: new URL(mcpUploadPath, url).href,
+        headers: { 'Content-Type': 'application/octet-stream', 'X-Folio-Filename': encodeURIComponent(name) },
+        max_bytes: max,
+      };
     },
     async share({ document_id, ...settings }) {
       const result = await changeShare(env, user.user_id, document_id, settings);
@@ -801,7 +820,7 @@ async function api(request, env, url, ctx) {
   if (pathname.startsWith('/api/admin/')) return admin(request, env, url, user);
   if (pathname === '/api/documents') {
     if (method === 'GET') return json({ documents: await listDocuments(env, user.id) });
-    if (method === 'POST') return upload(request, env, user.id, ctx);
+    if (method === 'POST') return json({ document: await storeStream(request, env, user.id, ctx) }, 201);
   }
 
   const owned = pathname.match(/^\/api\/documents\/([a-f0-9]{32})(?:\/(preview|download|share))?$/);
@@ -828,7 +847,9 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname.startsWith('/api/')) return await api(request, env, url, ctx);
-      if (url.pathname === '/mcp' || url.pathname === '/mcp/') return await mcp(request, env, url);
+      if (url.pathname === '/mcp' || url.pathname === '/mcp/' || url.pathname === mcpUploadPath) {
+        return await mcp(request, env, url, ctx);
+      }
       if (request.method !== 'GET' && request.method !== 'HEAD') throw new HttpError(405, '此请求方式不可用。');
       const layout = url.pathname.match(/^\/office-layout\/(docx|pptx)$/);
       if (layout) {

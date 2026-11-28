@@ -19,7 +19,7 @@ Folio Dock 是一款可自建的文档上传、在线预览和分享工具。它
 
 可在线查看的文件支持「全屏预览」，包括免登录分享页。浏览器无法进入系统全屏时，预览会铺满当前页面。
 
-网页版流式写入 R2，单文件上限为 50 MB，Markdown 为 1 MB，TXT 为 2 MB。每个账号最多存放 100 份文件，合计 150 MB。MCP 单文件上限为 4 MB，并遵循各格式上限。
+网页版和 MCP 流式上传的单文件上限为 50 MB，Markdown 为 1 MB，TXT 为 2 MB（按 MiB 计）。每个账号最多存放 100 份文件，合计 150 MB。
 
 ## 本地运行
 
@@ -61,8 +61,24 @@ Folio Dock 是一款可自建的文档上传、在线预览和分享工具。它
 | 工具 | 用途 |
 | --- | --- |
 | list_documents | 列出自己的文档、可用分享链接和分享码。 |
-| upload_document | 上传原始文件。二进制文件使用 base64。share 默认关闭。 |
+| upload_document | 在工具参数中上传小文件，最多 4 MiB，且遵循格式上限。二进制文件使用 base64。share 默认关闭。 |
+| prepare_document_upload | 按文件名和可选字节数返回流式上传地址、HTTP 方法、请求头和文件大小上限。 |
 | set_document_sharing | 通过文档 ID 创建、修改或关闭分享，可设置 password 和 expires_in。 |
+
+### 流式上传
+
+1. 调用 `prepare_document_upload`，例如传入 `{"filename":"slides.pptx","size":52428800}`。
+2. 按返回的 `method`、`upload_url` 和 `headers` 发送 HTTP 请求，带上同一个 MCP Bearer 令牌，并将原文件字节作为请求体。若客户端只能调用 MCP 工具，可在终端执行以下请求。用工具返回的地址和文件名请求头替换示例变量。
+
+```sh
+curl --fail-with-body --upload-file ./slides.pptx \
+  -H "Authorization: Bearer ${FOLIO_MCP_TOKEN}" \
+  -H "Content-Type: application/octet-stream" \
+  -H "X-Folio-Filename: ${FOLIO_UPLOAD_FILENAME}" \
+  "${FOLIO_UPLOAD_URL}"
+```
+
+成功后返回 HTTP 201，文件默认私有。需要分享时，将响应中的 `document.id` 传给 `set_document_sharing`，同时传入 `enabled: true`。
 
 expires_in 以秒为单位。修改正在生效的分享时，省略 password 或 expires_in 可保留原设置，传入 null 可移除对应限制。
 
