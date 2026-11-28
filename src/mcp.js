@@ -6,7 +6,8 @@ export const maxInlineFile = 4 * 1024 * 1024;
 const maxBase64 = 4 * Math.ceil(maxInlineFile / 3);
 export const maxMcpBody = 6 * 1024 * 1024;
 export const mcpUploadPath = '/mcp/upload';
-const sharingOptions = {
+export const mcpShareHeader = 'X-Folio-Share';
+export const sharingOptions = {
   expires_in: z.number().int().min(1).max(365 * 86400).nullable().optional()
     .describe('Seconds until expiration. Null means no expiry. Omit to keep the current expiry when editing an active share.'),
   password: z.string().min(4).max(64).nullable().optional()

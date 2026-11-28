@@ -34,6 +34,13 @@ export const formats = {
 
 export const formatAliases = { htm: 'html', markdown: 'md', jpeg: 'jpg', mht: 'mhtml' };
 
+export function formatForFilename(filename) {
+  const extension = filename.match(/\.([a-z0-9]+)$/i)?.[1].toLowerCase();
+  if (Object.hasOwn(formatAliases, extension)) return formatAliases[extension];
+  if (Object.hasOwn(formats, extension)) return extension;
+  return null;
+}
+
 export function validSignature(format, bytes) {
   const ascii = (start, end) => String.fromCharCode(...bytes.subarray(start, end));
   switch (format) {

@@ -65,6 +65,37 @@ Folio Dock 是一款可自建的文档上传、在线预览和分享工具。它
 | prepare_document_upload | 按文件名和可选字节数返回流式上传地址、HTTP 方法、请求头和文件大小上限。 |
 | set_document_sharing | 通过文档 ID 创建、修改或关闭分享，可设置 password 和 expires_in。 |
 
+### 从本地路径上传并分享
+
+使用支持本地 stdio 服务的 MCP 客户端。若尚未安装项目依赖，在仓库中运行 `npm ci`。给客户端添加以下 MCP 服务，将脚本路径替换为本机仓库的绝对路径。把站点地址和工作台生成的 MCP 令牌只保存在本机配置中。
+
+```json
+{
+  "mcpServers": {
+    "folio-dock-local": {
+      "command": "node",
+      "args": ["/absolute/path/to/folio-dock/src/mcp-local.js"],
+      "env": {
+        "FOLIO_SITE_URL": "https://folio.example.com",
+        "FOLIO_MCP_TOKEN": "YOUR_MCP_TOKEN"
+      }
+    }
+  }
+}
+```
+
+调用 `upload_local_file` 时传入文件路径，例如：
+
+```json
+{
+  "path": "/absolute/path/to/slides.pptx",
+  "password": "example-passphrase",
+  "expires_in": 86400
+}
+```
+
+工具从本机读取文件，流式写入 R2，并返回 `share_url`、`share_code` 和文档信息。支持绝对路径和 `~/` 路径。省略 `password` 时无需口令，省略 `expires_in` 时分享不会自动过期。有效期以秒为单位，从发布时起算。文件大小限制与网页版相同。
+
 ### 流式上传
 
 1. 调用 `prepare_document_upload`，例如传入 `{"filename":"slides.pptx","size":52428800}`。

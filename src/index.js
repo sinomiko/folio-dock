@@ -1,6 +1,6 @@
 import MarkdownIt from 'markdown-it';
-import { handleMcp, maxInlineFile, maxMcpBody, mcpUploadPath } from './mcp.js';
-import { formats, formatAliases } from './formats.js';
+import { handleMcp, maxInlineFile, maxMcpBody, mcpShareHeader, mcpUploadPath } from './mcp.js';
+import { formats, formatForFilename } from './formats.js';
 import { HttpError } from './http-error.js';
 import { streamUpload, uploadLength, validateUploadSignature } from './uploads.js';
 import { formatShareCode, normalizeShareCode } from '../public/share-code.js';
@@ -229,10 +229,9 @@ function cleanFilename(value) {
 }
 
 function getFormat(name) {
-  const extension = name.match(/\.([a-z0-9]+)$/i)?.[1].toLowerCase();
-  if (Object.hasOwn(formatAliases, extension)) return formatAliases[extension];
-  if (Object.hasOwn(formats, extension)) return extension;
-  throw new HttpError(415, '请选择 HTML、Markdown、PDF、TXT、图片、MHTML 或 Office 文件。');
+  const format = formatForFilename(name);
+  if (!format) throw new HttpError(415, '请选择 HTML、Markdown、PDF、TXT、图片、MHTML 或 Office 文件。');
+  return format;
 }
 
 function placeholders(count) {
@@ -257,12 +256,12 @@ async function cleanupIncomplete(env, owner = null) {
   return purgeDocuments(env, results.map(({ id }) => id));
 }
 
-function storeStream(request, env, owner, ctx) {
+function storeStream(request, env, owner, ctx, shareSettings) {
   const name = cleanFilename(readFilename(request.headers.get('X-Folio-Filename')));
   const format = getFormat(name);
   const length = uploadLength(request, format);
   const stored = storeFile(env, owner, name, format, length ?? 1,
-    id => streamUpload(env.FILES, id, request.body, format, length));
+    id => streamUpload(env.FILES, id, request.body, format, length), shareSettings !== undefined, shareSettings);
   // Let cleanup finish when the client disconnects during an upload.
   ctx.waitUntil(stored.catch(() => {}));
   return stored;
@@ -319,7 +318,7 @@ async function storeFile(env, owner, name, format, reservedSize, writeObject, sh
     "share_password_hash = ? WHERE id = ? AND owner_id = ? AND state = 'pending' AND " + activeDocumentOwner +
     ' AND (size = ? OR ? + (SELECT COALESCE(SUM(other.size), 0) FROM documents AS other WHERE other.owner_id = documents.owner_id AND other.id != documents.id) <= ?)' +
     ' RETURNING ' + documentFields + ', ' + ownerShareFields,
-  ).bind(size, shared ? randomHex(24) : null, policy.expiresAt ?? null, policy.salt ?? null, policy.verifier ?? null,
+  ).bind(size, shared ? randomHex(24) : null, shareExpiration(policy), policy.salt ?? null, policy.verifier ?? null,
     id, owner, size, size, maxStorage).first();
   if (!uploaded) {
     await discardUpload();
@@ -353,7 +352,7 @@ async function readSharePolicy(settings, env) {
     if (expires_in !== null && (!Number.isSafeInteger(expires_in) || expires_in < 1 || expires_in > 365 * 86400)) {
       throw new HttpError(400, '分享有效期须介于 1 秒和 365 天。');
     }
-    policy.expiresAt = expires_in === null ? null : now() + expires_in;
+    policy.expiresIn = expires_in;
   }
   if (password !== undefined) {
     if (password !== null && (typeof password !== 'string' || password.length < 4 || password.length > 64 || !password.trim())) {
@@ -364,6 +363,10 @@ async function readSharePolicy(settings, env) {
     policy.verifier = password === null ? null : hex(await passwordVerifier(password, policy.salt, env.PASSWORD_PEPPER));
   }
   return policy;
+}
+
+function shareExpiration(policy) {
+  return policy.expiresIn == null ? null : now() + policy.expiresIn;
 }
 
 async function changeShare(env, owner, id, settings) {
@@ -379,12 +382,12 @@ async function changeShare(env, owner, id, settings) {
   }
 
   const policy = await readSharePolicy(settings, env);
-  const hasExpiry = Object.hasOwn(policy, 'expiresAt');
+  const hasExpiry = Object.hasOwn(policy, 'expiresIn');
   const fields = ['share_token = CASE WHEN share_token IS NULL OR NOT ' + shareExpiryFilter + ' THEN ? ELSE share_token END'];
   const values = [randomHex(24)];
   if (hasExpiry) {
     fields.push('share_expires_at = ?');
-    values.push(policy.expiresAt);
+    values.push(shareExpiration(policy));
   }
   if (Object.hasOwn(policy, 'verifier')) {
     fields.push('share_password_salt = ?', 'share_password_hash = ?');
@@ -487,6 +490,21 @@ async function verifySharePassword(request, env, token, share) {
   return json({ ok: true }, 200, { 'Set-Cookie': cookie });
 }
 
+function mcpUploadShareSettings(request) {
+  const header = request.headers.get(mcpShareHeader);
+  if (header === null) return undefined;
+  if (header.length <= 2048) {
+    try {
+      const settings = JSON.parse(decodeURIComponent(header));
+      if (settings && typeof settings === 'object' && !Array.isArray(settings) &&
+          Object.keys(settings).every(key => key === 'password' || key === 'expires_in')) return settings;
+    } catch {
+      // Report malformed metadata without echoing the header.
+    }
+  }
+  throw new HttpError(400, '分享设置无效。');
+}
+
 async function mcp(request, env, url, ctx) {
   const origin = request.headers.get('Origin');
   if (origin !== null && origin !== url.origin) throw new HttpError(403, '此请求不受信任。');
@@ -505,8 +523,11 @@ async function mcp(request, env, url, ctx) {
     headers: { ...security, 'Cache-Control': 'no-store', Allow: method },
   });
   if (streaming) {
-    const document = await storeStream(request, env, user.user_id, ctx);
-    return json({ document }, 201);
+    const shareSettings = mcpUploadShareSettings(request);
+    const document = await storeStream(request, env, user.user_id, ctx, shareSettings);
+    if (shareSettings === undefined) return json({ document }, 201);
+    const { share_token, ...metadata } = document;
+    return json({ document: { ...metadata, ...shareFields(url.origin, document) } }, 201);
   }
 
   const body = await readJson(request, maxMcpBody);
