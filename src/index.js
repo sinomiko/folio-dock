@@ -1,6 +1,8 @@
 import MarkdownIt from 'markdown-it';
 import { handleMcp, maxMcpBody } from './mcp.js';
-import { formats, formatAliases, validSignature } from './formats.js';
+import { formats, formatAliases } from './formats.js';
+import { HttpError } from './http-error.js';
+import { streamUpload, uploadLength, validateUploadSignature } from './uploads.js';
 import { formatShareCode, normalizeShareCode } from '../public/share-code.js';
 
 const encoder = new TextEncoder();
@@ -45,13 +47,6 @@ const officeLayoutCsp = [
 ].join('; ');
 const markdownStyle = 'html{color-scheme:light}body{font:16px/1.72 system-ui,sans-serif;color:#29263a;margin:0;padding:clamp(20px,5vw,56px);overflow-wrap:anywhere}main{max-width:760px;margin:auto}h1,h2,h3{line-height:1.25;margin:1.4em 0 .55em}main>:first-child{margin-top:0}a{color:#5240a3}pre,code{background:#f1eef9;border-radius:5px}code{padding:.12em .35em}pre{padding:16px;overflow:auto}pre code{padding:0}blockquote{border-left:3px solid #b7a9f1;margin-left:0;padding-left:16px;color:#5d5670}img{max-width:100%}table{border-collapse:collapse;display:block;overflow:auto}th,td{border:1px solid #dfd9ee;padding:7px 12px}';
 const now = () => Math.floor(Date.now() / 1000);
-
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
 
 function json(body, status = 200, extraHeaders = {}) {
   return Response.json(body, {
@@ -262,18 +257,35 @@ async function cleanupIncomplete(env, owner = null) {
   return purgeDocuments(env, results.map(({ id }) => id));
 }
 
-async function upload(request, env, owner) {
+async function upload(request, env, owner, ctx) {
   const name = cleanFilename(readFilename(request.headers.get('X-Folio-Filename')));
   const format = getFormat(name);
-  const bytes = await readBody(request, formats[format].max);
-  return json({ document: await storeDocument(env, owner, name, format, bytes, false) }, 201);
+  const length = uploadLength(request, format);
+  const stored = storeFile(env, owner, name, format, length ?? 1,
+    id => streamUpload(env.FILES, id, request.body, format, length));
+  // Let cleanup finish when the client disconnects during an upload.
+  ctx.waitUntil(stored.catch(() => {}));
+  return json({ document: await stored }, 201);
 }
 
 async function storeDocument(env, owner, name, format, bytes, shared, settings = {}) {
   if (!bytes.byteLength) throw new HttpError(400, '文件为空。');
   if (bytes.byteLength > formats[format].max) throw new HttpError(413, '文件超出大小限制。');
-  if (!validSignature(format, bytes)) throw new HttpError(400, '文件内容与 .' + format + ' 格式不符。');
+  validateUploadSignature(format, bytes);
+  return storeFile(env, owner, name, format, bytes.length,
+    async id => (await env.FILES.put(id, bytes)).size, shared, settings);
+}
 
+async function requireActiveOwner(env, owner) {
+  const active = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND status = 'active'").bind(owner).first();
+  if (!active) throw new HttpError(403, '此账号已暂停使用。');
+}
+
+function storageLimit() {
+  return new HttpError(409, '已达到 100 份文档或 150 MB 的空间上限。');
+}
+
+async function storeFile(env, owner, name, format, reservedSize, writeObject, shared = false, settings = {}) {
   const policy = shared ? await readSharePolicy(settings, env) : {};
   await cleanupIncomplete(env, owner);
   const id = randomHex(16);
@@ -283,35 +295,39 @@ async function storeDocument(env, owner, name, format, bytes, shared, settings =
     "SELECT ?, ?, ?, ?, ?, ?, 'pending' FROM (" +
     'SELECT COUNT(*) AS document_count, COALESCE(SUM(size), 0) AS total_size FROM documents WHERE owner_id = ?' +
     ") WHERE document_count < ? AND total_size + ? <= ? AND EXISTS (SELECT 1 FROM users WHERE id = ? AND status = 'active')",
-  ).bind(id, owner, name, format, bytes.length, time, owner, maxDocuments, bytes.length, maxStorage, owner).run();
+  ).bind(id, owner, name, format, reservedSize, time, owner, maxDocuments, reservedSize, maxStorage, owner).run();
   if (!reservation.meta.changes) {
-    const active = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND status = 'active'").bind(owner).first();
-    if (!active) throw new HttpError(403, '此账号已暂停使用。');
-    throw new HttpError(409, '已达到 100 份文档或 150 MB 的空间上限。');
+    await requireActiveOwner(env, owner);
+    throw storageLimit();
   }
 
   const discardUpload = async () => {
-    const result = await env.DB.prepare("UPDATE documents SET state = 'deleting' WHERE id = ? AND state = 'pending'")
-      .bind(id).run();
-    if (result.meta.changes) await purgeDocuments(env, [id]);
+    await env.DB.prepare("UPDATE documents SET state = 'deleting' WHERE id = ? AND state = 'pending'").bind(id).run();
+    await purgeDocuments(env, [id]);
   };
 
+  let size;
   try {
-    await env.FILES.put(id, bytes);
+    size = await writeObject(id);
   } catch (error) {
     await discardUpload().catch(() => {});
     throw error;
   }
-  const document = await env.DB.prepare(
-    "UPDATE documents SET state = 'ready', share_token = ?, share_expires_at = ?, share_password_salt = ?, " +
-    "share_password_hash = ? WHERE id = ? AND owner_id = ? AND state = 'pending' AND " + activeDocumentOwner + " RETURNING " +
-    documentFields + ', ' + ownerShareFields,
-  ).bind(shared ? randomHex(24) : null, policy.expiresAt ?? null, policy.salt ?? null, policy.verifier ?? null, id, owner).first();
-  if (!document) {
+  // Chunked requests reserve a slot first and check the exact size at publication.
+  const uploaded = await env.DB.prepare(
+    "UPDATE documents SET state = 'ready', size = ?, share_token = ?, share_expires_at = ?, share_password_salt = ?, " +
+    "share_password_hash = ? WHERE id = ? AND owner_id = ? AND state = 'pending' AND " + activeDocumentOwner +
+    ' AND (size = ? OR ? + (SELECT COALESCE(SUM(other.size), 0) FROM documents AS other WHERE other.owner_id = documents.owner_id AND other.id != documents.id) <= ?)' +
+    ' RETURNING ' + documentFields + ', ' + ownerShareFields,
+  ).bind(size, shared ? randomHex(24) : null, policy.expiresAt ?? null, policy.salt ?? null, policy.verifier ?? null,
+    id, owner, size, size, maxStorage).first();
+  if (!uploaded) {
     await discardUpload();
-    throw new HttpError(403, '此账号已暂停使用，上传已取消。');
+    await requireActiveOwner(env, owner);
+    if (size !== reservedSize) throw storageLimit();
+    throw new HttpError(409, '上传已取消，请重试。');
   }
-  return document;
+  return uploaded;
 }
 
 async function deleteDocument(env, owner, id) {
@@ -742,7 +758,7 @@ async function contents(env, document, download) {
   });
 }
 
-async function api(request, env, url) {
+async function api(request, env, url, ctx) {
   const { pathname } = url;
   const method = request.method;
   if (method !== 'GET' && (
@@ -785,7 +801,7 @@ async function api(request, env, url) {
   if (pathname.startsWith('/api/admin/')) return admin(request, env, url, user);
   if (pathname === '/api/documents') {
     if (method === 'GET') return json({ documents: await listDocuments(env, user.id) });
-    if (method === 'POST') return upload(request, env, user.id);
+    if (method === 'POST') return upload(request, env, user.id, ctx);
   }
 
   const owned = pathname.match(/^\/api\/documents\/([a-f0-9]{32})(?:\/(preview|download|share))?$/);
@@ -808,10 +824,10 @@ async function api(request, env, url) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     try {
-      if (url.pathname.startsWith('/api/')) return await api(request, env, url);
+      if (url.pathname.startsWith('/api/')) return await api(request, env, url, ctx);
       if (url.pathname === '/mcp' || url.pathname === '/mcp/') return await mcp(request, env, url);
       if (request.method !== 'GET' && request.method !== 'HEAD') throw new HttpError(405, '此请求方式不可用。');
       const layout = url.pathname.match(/^\/office-layout\/(docx|pptx)$/);

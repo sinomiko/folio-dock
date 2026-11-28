@@ -11,7 +11,7 @@
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
-    "check": "node --check src/index.js && node --check src/mcp.js && node --check public/app.js && node --check public/management.js && node --check public/admin-users.js && npm run build:preview"
+    "check": "node --check src/index.js && node --check src/mcp.js && node --check src/uploads.js && node --check public/app.js && node --check public/management.js && node --check public/admin-users.js && npm run build:preview"
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "1.4.0",

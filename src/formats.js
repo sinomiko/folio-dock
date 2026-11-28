@@ -1,5 +1,5 @@
 const MiB = 1024 * 1024;
-const max = 15 * MiB;
+const max = 50 * MiB;
 const richOffice = { max, binary: true, preview: 'rich' };
 const oldOffice = { max, binary: true, preview: 'download' };
 
